@@ -41,6 +41,24 @@ function toUnixPath(filePath) {
 }
 const baseDir = toUnixPath(process.cwd()) // 获取工作目录,在哪里执行命令就获取哪里的目录,这里获取的也是跟操作系统有关系,要替换成 / 
 
+const parser = require("@babel/parser")
+let types = require("@babel/types")
+const traverse = require("@babel/traverse").default;
+const generator = require("@babel/generator").default;
+
+// 获取文件路径
+function tryExtensions (modulePath,extensions) {
+    if(fs.existsSync(modulePath)) {
+        return modulePath
+    }
+    for(let i = 0; i < extensions?.length; i++) {
+        let filePath = modulePath + extensions[i]
+        if(fs.existsSync(filePath)) {
+            return filePath
+        }
+    }
+    throw new Error(`无法找到${modulePath}`)
+}
 // 编译阶段最为复杂,且考虑到watch mode场景(当文件变化时,将重新进行编译) 因此将编译阶段单独解耦出来方便使用和理解
 class Compilation {
     constructor(webpackOptions) {
@@ -61,7 +79,7 @@ class Compilation {
             id: moduleId,
             names: [name], // name设计成数组是因为代表的是此模块属于哪个代码块,可能属于多个代码块
             dependencies: [], // 它依赖的模块
-            _source: "", // 该模块的代码信息
+            _source: "", // 该模块的代码信息(该模块转译后的源代码)
         }
         // 6.2.3 找到对应的 loader 对源码进行翻译和替换
         let loaders = []
@@ -77,7 +95,26 @@ class Compilation {
         sourceCode = loaders.reduceRight((code,loader) => {
             return loader(code)
         }, sourceCode)
-        
+        // 通过loader 翻译后的内容一定得是js内容,因为最后得走我们babel-parse,只有js才能编译成AST
+        // 第七步: 找出此模块所依赖的模块,在对依赖模块进行编译
+        let ast = parser.parse(sourceCode, { sourceType: "module"}) 
+        traverse(ast, {
+            CallExpression: (nodePath => {
+                const { node } = nodePath
+                // 7.2: 在 AST 中查找 requier 语句,找到依赖的模块名称和绝对路径
+                if(node.callee.name === "require") {
+                    let depModuleName = node.arguments[0].value // 获取依赖的模块
+                    let dirname = path.posix.dirname(modulePath)  // 获取当前正在编译的模块所在的目录
+                    let depModulePath = path.posix.join(dirname,depModuleName) // 获取依赖模块的绝对路径
+                    let extensions = this.options.resolve?.extensions || [ ".js" ] // 获取配置汇总的extensions
+                    depModulePath = teyExtensions(depModulePath,extensions) // 尝试添加后缀,找到一个真实在硬盘上存在的文件
+                    // 7.3: 将依赖模块的绝对路径 push 到 this.fileDependencies 中
+                    this.fileDependencies.push(depModulePath)
+                    // 7.4: 生成依赖模块的 模块id
+                    let depModuleId = "./" + path.posix.relative(baseDir,depModulePath)
+                }
+            })
+        })
         return module
     }
     build(callback) {
@@ -95,6 +132,8 @@ class Compilation {
             this.fileDependencies.push(entryFilePath)
             // 6.2 得到入口模块的 module对象(里面放着该模块的路径、依赖模块、源代码等)
             let  entryModule = this.buildModule(entryName,entryFilePath)
+            // 6.3 将生成的入口文件 module 对象 push 进 this.modules 中
+            this.modules.push(entryModule)
         }
         // 这里开始做编译工作,编译成功执行 callback
         callback()
