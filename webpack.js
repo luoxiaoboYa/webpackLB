@@ -41,10 +41,10 @@ function toUnixPath(filePath) {
 }
 const baseDir = toUnixPath(process.cwd()) // 获取工作目录,在哪里执行命令就获取哪里的目录,这里获取的也是跟操作系统有关系,要替换成 / 
 
-const parser = require("@babel/parser")
-let types = require("@babel/types")
-const traverse = require("@babel/traverse").default;
-const generator = require("@babel/generator").default;
+const parser = require("@babel/parser") // 解析器,将代码解析为AST
+let types = require("@babel/types") //用来生成或者判断节点的AST语法树的节点
+const traverse = require("@babel/traverse").default; // 遍历/修改 AST的工具
+const generator = require("@babel/generator").default; // 生成器.将AST还原成代码
 
 // 获取文件路径
 function tryExtensions (modulePath,extensions) {
@@ -99,9 +99,9 @@ class Compilation {
         // 第七步: 找出此模块所依赖的模块,在对依赖模块进行编译
         let ast = parser.parse(sourceCode, { sourceType: "module"}) 
         traverse(ast, {
-            CallExpression: (nodePath => {
+            CallExpression: nodePath => {
                 const { node } = nodePath
-                // 7.2: 在 AST 中查找 requier 语句,找到依赖的模块名称和绝对路径
+                // 7.2: 在 AST 中查找 require 语句,找到依赖的模块名称和绝对路径
                 if(node.callee.name === "require") {
                     let depModuleName = node.arguments[0].value // 获取依赖的模块
                     let dirname = path.posix.dirname(modulePath)  // 获取当前正在编译的模块所在的目录
@@ -112,9 +112,33 @@ class Compilation {
                     this.fileDependencies.push(depModulePath)
                     // 7.4: 生成依赖模块的 模块id
                     let depModuleId = "./" + path.posix.relative(baseDir,depModulePath)
+                    // 7.5:修改语法结构,把依赖的模块改为依赖 模块id,, require("./name")=>require("./src/name.js")  所谓模块是 ./name 模块id则是 ./src/name.js
+                    node.arguments = [types.stringLiteral(depModuleId)]
+                    // 7.6: 将依赖模块的信息,push到该模块的 dependencies 属性中
+                    module.dependencies.push({ depModuleId, depModulePath })
                 }
-            })
+            }
         })
+
+        // 7.7: 生成新代码,并把转译后的源代码放到 module._source 属性上
+        let { code } = generator(ast)
+        module._source = code
+        // 7.8: 对依赖模块进行编译,(对 module 对象中的 dependencies 进行递归执行 buildModule)
+        module.dependencies.forEach(({ depModuleId, depModulePath }) =>{
+            // 考虑到多入口打包: 一个模块被多个其他模块引用,不需要重复打包
+            let existModule = this.modules.find((item) => item.id === depModuleId)
+            // 如果modules 里已经存在这个简要编译的依赖模块了,那么就不需要编译了,直接把此代码块的名称添加到对应模块的 names字段里就可以了
+            if(existModule) {
+                // names指的是它属于哪个代码块chunk
+                existModule.names.push(name)
+            }else{
+                // 如果不存在,则再次执行 buildModule进行编译
+                let depModule = this.buildModule(name,depModulePath)
+                // 7.9: 对依赖模块编译完成后,得到依赖模块的module对象,push到 this.modules 中
+                this.modules.push(depModule)
+            }
+        })
+        //7.10：等依赖模块全部编译完成后，返回入口模块的 `module` 对象
         return module
     }
     build(callback) {
