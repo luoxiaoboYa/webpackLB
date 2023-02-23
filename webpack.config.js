@@ -1,5 +1,5 @@
 const path = require("path")
-const {WebpackRunPlugin,WebpackDonePlugin,loader1,loader2 } = require("./webpack")
+const {WebpackRunPlugin,WebpackDonePlugin,loader1,loader2 } = require("./webpack.js")
 module.exports = {
     mode: "development", // 防止代码被压缩
     entry: "./src/index.js", // 入口文件

@@ -1,7 +1,38 @@
+// 生成运行时代码
+function getSource(chunk) {
+    return `
+    (() => {
+        var modules = {
+            ${chunk.modules.map((module) => `"${module.id}": (module) => {
+                ${module._source}
+                }`
+            )}
+        };
+        var cache = {};
+        function require(moduleId) {
+            var cacheModule = cache[moduleId];
+            if(cacheModule !== undefined) {
+                return cacheModule.exports;
+            }
+            var module = (cache[moduleId] = {
+                export: {},
+            });
+            modules[moduleId](module,module.exports,require) 
+            return module.exports;
+        }
+        var exports = {};
+        ${chunk.entryModule._source}
+
+    })()
+    `
+}
+
+const { SyncHook } = require("tapable");
 //Compiler其实是一个类，它是整个编译过程的大管家，而且是单例模式
 class Compiler {
     constructor(webpackOptions){
-        this.options = webpackOptions
+        this.options = webpackOptions // 存储配置信息
+        // 它内部提供了很多钩子
         this.hooks = {
             run: new SyncHook(), // 会在编译刚开始的时候触发此run钩子
             done: new SyncHook(), // 会在编译结束的时候触发此done钩子
@@ -17,7 +48,17 @@ class Compiler {
     // 第四步: 执行 Compiler 对象的 run方法开始执行编译
     run(callback) {
         this.hooks.run.call() // 在编译前触发run钩子执行,表示开始启动编译了
-        const onCompiled = () => {
+        const onCompiled = (err, stats, fileDependencies) => {
+            // 第十步: 确定好输出内容之后,根据配置的输出路径和文件名,将文件内容写入到文件系统(这里是硬盘)
+            for(let filename in stats.assets) {
+                let filePath = path.join(this.options.output.path, filename)
+                fs.writeFileSync(filePath, stats.assets[filename], "utf8")
+            }
+            callback(err,{
+                toJson: () => stats,
+            })
+
+
             this.hooks.done.call() // 在编译成功后会触发done这个钩子执行
         }
         this.compile(onCompiled) // 开始编译,成功之后调用 onCompiled
@@ -33,6 +74,7 @@ function webpack(webpackOptions) {
     for (let plugin of plugins) {
         plugin.apply(compiler)
     }
+     //第四步：执行 `Compiler` 对象的 `run` 方法开始执行编译
     return compiler 
 }
 // 因为要获取入口文件的绝对路径,考虑到操作系统的兼容性问题, 将 \ 替换成 / 
@@ -107,7 +149,7 @@ class Compilation {
                     let dirname = path.posix.dirname(modulePath)  // 获取当前正在编译的模块所在的目录
                     let depModulePath = path.posix.join(dirname,depModuleName) // 获取依赖模块的绝对路径
                     let extensions = this.options.resolve?.extensions || [ ".js" ] // 获取配置汇总的extensions
-                    depModulePath = teyExtensions(depModulePath,extensions) // 尝试添加后缀,找到一个真实在硬盘上存在的文件
+                    depModulePath = tryExtensions(depModulePath,extensions) // 尝试添加后缀,找到一个真实在硬盘上存在的文件
                     // 7.3: 将依赖模块的绝对路径 push 到 this.fileDependencies 中
                     this.fileDependencies.push(depModulePath)
                     // 7.4: 生成依赖模块的 模块id
@@ -144,11 +186,12 @@ class Compilation {
     build(callback) {
         // 第五步: 根据配置文件中的 entry 配置项找到所有的入口
         let entry = {}
-        if (typeof this.options.entry === "string") {
-            entry.main = this.options.entry // 如果是单入口,将entry: "xx"变成{main:"xx"},这里需要做兼容
-        } else {
-            entry = this.options.entry
-        }
+        console.log(this.options)
+        // if (typeof this.options.entry === "string") {
+        //     entry.main = this.options.entry // 如果是单入口,将entry: "xx"变成{main:"xx"},这里需要做兼容
+        // } else {
+        //     entry = this.options.entry
+        // }
         // 第六步: 从入口文件出发,调用配置的 loader 规则,对各模块进行编译
         for(let entryName in entry) {
             let entryFilePath = path.posix.join(baseDir,entry[entryName]) // path.posix为了解决不同操作系统的路径分隔符,这里拿到的就是入口文件的绝对路径
@@ -158,9 +201,27 @@ class Compilation {
             let  entryModule = this.buildModule(entryName,entryFilePath)
             // 6.3 将生成的入口文件 module 对象 push 进 this.modules 中
             this.modules.push(entryModule)
+            // 第八步: 等所有模块都编译完成后,根据模块之间的依赖关系,组装代码块 chunk (一般来说,每个入口文件会对应一个代码块 chunk ,每个代码块 chunk 里面会放着本入口模块和它依赖的模块)
+            let chunk = {
+                name: entryName, // entryName = "main" 代码块的名称
+                entryModule, // 此代码块对应的module的对象,这里就是src/index.js的module对象
+                modules:this.modules.filter((item) => item.names.includes(entryName)), // 找出属于该代码块的模块
+            }
+            this.chunks.push(chunk)
         }
+        // 第九步: 把各个代码块 chunk  转换成一个一个文件加入到输出列表
+        this.chunks.forEach((chunk) => {
+            let filename = this.options.filename.replace("[name]", chunk.name) 
+            this.assets[filename] = getSource(chunk)
+        })
         // 这里开始做编译工作,编译成功执行 callback
-        callback()
+        callback(null, {
+            chunks: this.chunks,
+            modules: this.modules,
+            assets: this.assets,
+        },
+        this.fileDependencies
+        )
     }
 }
 
@@ -188,3 +249,11 @@ const loader1 = (source) => {
 const loader2 = (source) => {
     return source + "//给你的代码加点注释:loader2"
 }
+
+module.exports = {
+    webpack,
+    WebpackRunPlugin,
+    WebpackDonePlugin,
+    loader1,
+    loader2,
+  };
