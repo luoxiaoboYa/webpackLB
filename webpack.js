@@ -64,7 +64,10 @@ class Compiler {
             callback(err,{
                 toJson: () => stats,
             })
-
+            // 实现watch模式,监听fileDependencies里面的文件,当文件发生变化时,重新执行compile
+            fileDependencies.forEach((fileDependencie) => {
+                fs.watch(fileDependencie,() => this.compile(onCompiled))
+            })
 
             this.hooks.done.call() // 在编译成功后会触发done这个钩子执行
         }
