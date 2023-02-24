@@ -1,3 +1,11 @@
+const path = require("path");
+const fs = require("fs");
+const { SyncHook } = require("tapable");
+const parser = require("@babel/parser") // 解析器,将代码解析为AST
+let types = require("@babel/types") //用来生成或者判断节点的AST语法树的节点
+const traverse = require("@babel/traverse").default; // 遍历/修改 AST的工具
+const generator = require("@babel/generator").default; // 生成器.将AST还原成代码
+
 // 生成运行时代码
 function getSource(chunk) {
     return `
@@ -27,7 +35,6 @@ function getSource(chunk) {
     `
 }
 
-const { SyncHook } = require("tapable");
 //Compiler其实是一个类，它是整个编译过程的大管家，而且是单例模式
 class Compiler {
     constructor(webpackOptions){
@@ -68,7 +75,7 @@ class Compiler {
 // 第一步: 搭建结构,读取配置参数,这里接受的是webpack.config.js中的参数
 function webpack(webpackOptions) {
     // 第二步: 用配置参数对象初始化 'Compiler' 对象
-    const compiler = new Compiler()
+    const compiler = new Compiler(webpackOptions)
     // 第三步: 挂载配置文件中的插件
     const { plugins } = webpackOptions;
     for (let plugin of plugins) {
@@ -83,10 +90,6 @@ function toUnixPath(filePath) {
 }
 const baseDir = toUnixPath(process.cwd()) // 获取工作目录,在哪里执行命令就获取哪里的目录,这里获取的也是跟操作系统有关系,要替换成 / 
 
-const parser = require("@babel/parser") // 解析器,将代码解析为AST
-let types = require("@babel/types") //用来生成或者判断节点的AST语法树的节点
-const traverse = require("@babel/traverse").default; // 遍历/修改 AST的工具
-const generator = require("@babel/generator").default; // 生成器.将AST还原成代码
 
 // 获取文件路径
 function tryExtensions (modulePath,extensions) {
@@ -127,7 +130,7 @@ class Compilation {
         let loaders = []
         let { rules = [] } = this.options.module
         rules.forEach(rule => {
-            let { tes } = rule
+            let { test } = rule
             if(modulePath.match(test)) {
                 loaders.push(...rule.use)
             }
@@ -187,11 +190,11 @@ class Compilation {
         // 第五步: 根据配置文件中的 entry 配置项找到所有的入口
         let entry = {}
         console.log(this.options)
-        // if (typeof this.options.entry === "string") {
-        //     entry.main = this.options.entry // 如果是单入口,将entry: "xx"变成{main:"xx"},这里需要做兼容
-        // } else {
-        //     entry = this.options.entry
-        // }
+        if (typeof this.options.entry === "string") {
+            entry.main = this.options.entry // 如果是单入口,将entry: "xx"变成{main:"xx"},这里需要做兼容
+        } else {
+            entry = this.options.entry
+        }
         // 第六步: 从入口文件出发,调用配置的 loader 规则,对各模块进行编译
         for(let entryName in entry) {
             let entryFilePath = path.posix.join(baseDir,entry[entryName]) // path.posix为了解决不同操作系统的路径分隔符,这里拿到的就是入口文件的绝对路径
@@ -211,7 +214,7 @@ class Compilation {
         }
         // 第九步: 把各个代码块 chunk  转换成一个一个文件加入到输出列表
         this.chunks.forEach((chunk) => {
-            let filename = this.options.filename.replace("[name]", chunk.name) 
+            let filename = this.options.output.filename.replace("[name]", chunk.name) 
             this.assets[filename] = getSource(chunk)
         })
         // 这里开始做编译工作,编译成功执行 callback
